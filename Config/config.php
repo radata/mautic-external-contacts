@@ -3,7 +3,7 @@
 return [
     'name'        => 'External Contacts',
     'description' => 'Protect contact fields managed by external providers from UI editing',
-    'version'     => '1.0.5',
+    'version'     => '1.0.6',
     'author'      => 'Radata',
 
     'routes' => [
@@ -78,6 +78,7 @@ return [
                 'arguments' => [
                     'mautic.external_contacts.provider_config_repository',
                     'request_stack',
+                    'database_connection',
                     'monolog.logger.mautic',
                 ],
             ],

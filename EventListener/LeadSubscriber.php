@@ -2,6 +2,7 @@
 
 namespace MauticPlugin\ExternalContactsBundle\EventListener;
 
+use Doctrine\DBAL\Connection;
 use Mautic\LeadBundle\Event\LeadEvent;
 use Mautic\LeadBundle\LeadEvents;
 use MauticPlugin\ExternalContactsBundle\Entity\ProviderConfigRepository;
@@ -11,9 +12,18 @@ use Symfony\Component\HttpFoundation\RequestStack;
 
 class LeadSubscriber implements EventSubscriberInterface
 {
+    /**
+     * Stores original values to restore after save.
+     * Keyed by lead ID → [alias => originalValue].
+     *
+     * @var array<int, array<string, mixed>>
+     */
+    private array $pendingRestores = [];
+
     public function __construct(
         private ProviderConfigRepository $providerConfigRepository,
         private RequestStack $requestStack,
+        private Connection $connection,
         private LoggerInterface $logger,
     ) {
     }
@@ -21,7 +31,8 @@ class LeadSubscriber implements EventSubscriberInterface
     public static function getSubscribedEvents(): array
     {
         return [
-            LeadEvents::LEAD_PRE_SAVE => ['onLeadPreSave', 100],
+            LeadEvents::LEAD_PRE_SAVE  => ['onLeadPreSave', 100],
+            LeadEvents::LEAD_POST_SAVE => ['onLeadPostSave', -100],
         ];
     }
 
@@ -36,6 +47,11 @@ class LeadSubscriber implements EventSubscriberInterface
         if ($this->isApiRequest()) {
             $this->logger->debug('ExternalContacts: skipping — API request');
 
+            return;
+        }
+
+        // For new contacts, nothing to protect
+        if (!$lead->getId()) {
             return;
         }
 
@@ -61,10 +77,6 @@ class LeadSubscriber implements EventSubscriberInterface
 
         $protectedFields = $config->getProtectedFields();
 
-        $this->logger->debug('ExternalContacts: protected fields = [{fields}]', [
-            'fields' => implode(', ', $protectedFields),
-        ]);
-
         if (empty($protectedFields)) {
             return;
         }
@@ -73,8 +85,12 @@ class LeadSubscriber implements EventSubscriberInterface
         $protectedFields[] = 'provider';
         $protectedFields   = array_unique($protectedFields);
 
+        $this->logger->debug('ExternalContacts: protected fields = [{fields}]', [
+            'fields' => implode(', ', $protectedFields),
+        ]);
+
+        $changes = $lead->getChanges();
         $updatedFields = $lead->getUpdatedFields();
-        $changes       = $lead->getChanges();
 
         $this->logger->debug('ExternalContacts: updatedFields keys = [{keys}]', [
             'keys' => implode(', ', array_keys($updatedFields)),
@@ -84,32 +100,64 @@ class LeadSubscriber implements EventSubscriberInterface
             'fieldKeys' => implode(', ', array_keys($changes['fields'] ?? [])),
         ]);
 
-        $reverted = [];
+        // Collect original values for protected fields that were changed
+        $toRestore = [];
 
         foreach ($protectedFields as $fieldAlias) {
-            if (!array_key_exists($fieldAlias, $updatedFields)) {
-                continue;
-            }
-
-            // Get the original value from the changes array
+            // Check if this field was changed (via addUpdatedField / changes tracking)
             if (isset($changes['fields'][$fieldAlias])) {
-                $originalValue = $changes['fields'][$fieldAlias][0];
+                $originalValue = $changes['fields'][$fieldAlias][0]; // [0] = old value
+                $toRestore[$fieldAlias] = $originalValue;
 
-                $this->logger->debug('ExternalContacts: reverting "{field}" from "{new}" back to "{orig}"', [
-                    'field' => $fieldAlias,
-                    'new'   => $updatedFields[$fieldAlias],
-                    'orig'  => $originalValue,
-                ]);
-
-                $lead->addUpdatedField($fieldAlias, $originalValue, $updatedFields[$fieldAlias]);
-                $reverted[] = $fieldAlias;
+                $this->logger->info(
+                    'ExternalContacts: will restore "{field}" from "{new}" back to "{orig}" after save',
+                    [
+                        'field' => $fieldAlias,
+                        'new'   => $changes['fields'][$fieldAlias][1] ?? '?',
+                        'orig'  => $originalValue,
+                    ]
+                );
             }
         }
 
-        if (!empty($reverted)) {
-            $this->logger->info('ExternalContacts: reverted UI changes to protected fields [{fields}] for provider "{provider}".', [
-                'fields'   => implode(', ', $reverted),
-                'provider' => $provider,
+        if (!empty($toRestore)) {
+            $this->pendingRestores[$lead->getId()] = $toRestore;
+        }
+    }
+
+    public function onLeadPostSave(LeadEvent $event): void
+    {
+        $lead   = $event->getLead();
+        $leadId = $lead->getId();
+
+        if (empty($this->pendingRestores[$leadId])) {
+            return;
+        }
+
+        $toRestore = $this->pendingRestores[$leadId];
+        unset($this->pendingRestores[$leadId]);
+
+        $this->logger->info('ExternalContacts: restoring {count} protected fields for lead #{id} via DBAL', [
+            'count' => count($toRestore),
+            'id'    => $leadId,
+        ]);
+
+        // Direct DBAL UPDATE to restore original values — bypasses ORM entirely
+        try {
+            $this->connection->update(
+                MAUTIC_TABLE_PREFIX.'leads',
+                $toRestore,
+                ['id' => $leadId]
+            );
+
+            $this->logger->info('ExternalContacts: successfully restored fields [{fields}] for lead #{id}', [
+                'fields' => implode(', ', array_keys($toRestore)),
+                'id'     => $leadId,
+            ]);
+        } catch (\Exception $e) {
+            $this->logger->error('ExternalContacts: DBAL restore failed for lead #{id}: {msg}', [
+                'id'  => $leadId,
+                'msg' => $e->getMessage(),
             ]);
         }
     }
