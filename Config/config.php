@@ -3,7 +3,7 @@
 return [
     'name'        => 'External Contacts',
     'description' => 'Protect contact fields managed by external providers from UI editing',
-    'version'     => '1.0.0',
+    'version'     => '1.0.1',
     'author'      => 'Radata',
 
     'routes' => [
@@ -98,10 +98,10 @@ return [
             ],
             'mautic.external_contacts.provider_config_repository' => [
                 'class'     => \MauticPlugin\ExternalContactsBundle\Entity\ProviderConfigRepository::class,
-                'factory'   => ['@doctrine.orm.entity_manager', 'getRepository'],
                 'arguments' => [
-                    \MauticPlugin\ExternalContactsBundle\Entity\ProviderConfig::class,
+                    'doctrine',
                 ],
+                'tag' => 'doctrine.repository_service',
             ],
         ],
     ],
