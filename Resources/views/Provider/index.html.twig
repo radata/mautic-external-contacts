@@ -1,0 +1,80 @@
+{% extends '@MauticCore/Default/content.html.twig' %}
+
+{% block mauticContent %}externalContactsProviders{% endblock %}
+
+{% block headerTitle %}External Contact Providers{% endblock %}
+
+{% block actions %}
+    <div class="btn-group">
+        <a href="{{ path('mautic_external_contacts_provider_new') }}" class="btn btn-default">
+            <i class="ri-add-line"></i> New Provider
+        </a>
+    </div>
+{% endblock %}
+
+{% block content %}
+<div class="panel panel-default bdr-t-wdh-0 mb-0">
+    <div class="page-list">
+        <div class="table-responsive">
+            <table class="table table-hover table-striped table-bordered" id="providerTable">
+                <thead>
+                    <tr>
+                        <th>Provider Name</th>
+                        <th>Protected Fields</th>
+                        <th>Active</th>
+                        <th>Date Added</th>
+                        <th style="width: 150px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% if providers is empty %}
+                        <tr>
+                            <td colspan="5" class="text-center pa-md">
+                                <p class="text-muted">No providers configured yet.</p>
+                                <a href="{{ path('mautic_external_contacts_provider_new') }}" class="btn btn-primary">
+                                    Add your first provider
+                                </a>
+                            </td>
+                        </tr>
+                    {% else %}
+                        {% for provider in providers %}
+                            <tr>
+                                <td>
+                                    <a href="{{ path('mautic_external_contacts_provider_edit', {objectId: provider.id}) }}">
+                                        <strong>{{ provider.providerName }}</strong>
+                                    </a>
+                                </td>
+                                <td>
+                                    {% for field in provider.protectedFields %}
+                                        <span class="label label-info">{{ field }}</span>
+                                    {% endfor %}
+                                </td>
+                                <td>
+                                    {% if provider.isActive %}
+                                        <span class="label label-success">Active</span>
+                                    {% else %}
+                                        <span class="label label-danger">Inactive</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ provider.dateAdded ? provider.dateAdded|date('Y-m-d H:i') : '-' }}</td>
+                                <td>
+                                    <a href="{{ path('mautic_external_contacts_provider_edit', {objectId: provider.id}) }}"
+                                       class="btn btn-sm btn-primary">
+                                        <i class="ri-edit-line"></i> Edit
+                                    </a>
+                                    <a href="{{ path('mautic_external_contacts_provider_delete', {objectId: provider.id}) }}"
+                                       class="btn btn-sm btn-danger"
+                                       data-toggle="confirmation"
+                                       data-message="Are you sure you want to delete this provider?">
+                                        <i class="ri-delete-bin-line"></i>
+                                    </a>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

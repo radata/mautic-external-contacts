@@ -1,0 +1,23 @@
+{
+    "name": "radata/mautic-external-contacts",
+    "description": "Protect contact fields managed by external providers from UI editing",
+    "type": "mautic-plugin",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Radata"
+        }
+    ],
+    "require": {
+        "php": ">=8.0",
+        "mautic/core-lib": "^7.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "MauticPlugin\\ExternalContactsBundle\\": ""
+        }
+    },
+    "extra": {
+        "install-directory-name": "ExternalContactsBundle"
+    }
+}

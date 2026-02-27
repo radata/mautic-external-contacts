@@ -1,0 +1,98 @@
+{% extends '@MauticCore/Default/content.html.twig' %}
+
+{% block mauticContent %}externalContactsProvider{% endblock %}
+
+{% block headerTitle %}
+    {% if isNew %}
+        New Provider
+    {% else %}
+        Edit Provider: {{ entity.providerName }}
+    {% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8 col-md-offset-2">
+        <div class="panel panel-default">
+            <div class="panel-heading">
+                <h3 class="panel-title">Provider Configuration</h3>
+            </div>
+            <div class="panel-body">
+                <form method="post" action="{{ isNew ? path('mautic_external_contacts_provider_new') : path('mautic_external_contacts_provider_edit', {objectId: entity.id}) }}">
+                    <div class="form-group">
+                        <label for="provider_name" class="control-label required">
+                            Provider Name
+                        </label>
+                        <input type="text"
+                               id="provider_name"
+                               name="provider_name"
+                               class="form-control"
+                               value="{{ entity.providerName }}"
+                               placeholder="e.g. APP, hollandworx"
+                               required>
+                        <p class="help-block">
+                            This must match the value stored in the contact's <code>provider</code> field.
+                        </p>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="protected_fields" class="control-label">
+                            Protected Fields
+                        </label>
+                        <select id="protected_fields"
+                                name="protected_fields[]"
+                                class="form-control chosen-select"
+                                multiple
+                                data-placeholder="Select fields to protect...">
+                            {% for alias, label in fieldChoices %}
+                                <option value="{{ alias }}"
+                                    {% if alias in entity.protectedFields %}selected{% endif %}>
+                                    {{ label }}
+                                </option>
+                            {% endfor %}
+                        </select>
+                        <p class="help-block">
+                            These fields will be read-only in the Mautic UI when a contact has this provider set.
+                            The <code>provider</code> field is always protected automatically.
+                        </p>
+                    </div>
+
+                    <div class="form-group">
+                        <div class="checkbox">
+                            <label>
+                                <input type="hidden" name="is_active" value="0">
+                                <input type="checkbox"
+                                       name="is_active"
+                                       value="1"
+                                       {% if entity.isActive is not defined or entity.isActive %}checked{% endif %}>
+                                Active
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="ri-save-line"></i> Save
+                        </button>
+                        <a href="{{ path('mautic_external_contacts_providers') }}" class="btn btn-default">
+                            Cancel
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Initialize chosen-select for the multi-select field
+    document.addEventListener('DOMContentLoaded', function() {
+        if (typeof mQuery !== 'undefined') {
+            mQuery('#protected_fields').chosen({
+                width: '100%',
+                search_contains: true
+            });
+        }
+    });
+</script>
+{% endblock %}
