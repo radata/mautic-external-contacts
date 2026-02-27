@@ -157,7 +157,9 @@ plugins/ExternalContactsBundle/
 │   └── ProviderController.php                 # Admin CRUD for provider configs
 ├── Entity/
 │   ├── ProviderConfig.php                     # Doctrine entity (external_contact_providers table)
-│   └── ProviderConfigRepository.php           # Repository with findActiveByName()
+│   └── ProviderConfigRepository.php           # Repository wrapper with findActiveByName()
+├── Migrations/
+│   └── M001_CreateProviderConfigTable.php     # Creates external_contact_providers table
 ├── EventListener/
 │   ├── PluginSubscriber.php                   # Creates provider field on install/update
 │   ├── LeadSubscriber.php                     # LEAD_PRE_SAVE: reverts protected fields on UI save

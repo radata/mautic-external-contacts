@@ -47,13 +47,11 @@ class ProviderController extends FormController
             return $this->notFound();
         }
 
-        // Get all lead field aliases for the multi-select
+        // Get all lead field aliases for the multi-select (flat list: alias => label)
         $leadFields = $fieldModel->getFieldList(false, true, ['isPublished' => true, 'object' => 'lead']);
         $fieldChoices = [];
-        foreach ($leadFields as $group => $fields) {
-            foreach ($fields as $alias => $label) {
-                $fieldChoices[$alias] = $label . ' (' . $alias . ')';
-            }
+        foreach ($leadFields as $alias => $label) {
+            $fieldChoices[$alias] = $label . ' (' . $alias . ')';
         }
 
         if ('POST' === $request->getMethod()) {
