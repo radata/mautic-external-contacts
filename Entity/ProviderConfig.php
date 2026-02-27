@@ -25,8 +25,7 @@ class ProviderConfig extends CommonEntity
     {
         $builder = new ClassMetadataBuilder($metadata);
 
-        $builder->setTable('external_contact_providers')
-            ->setCustomRepositoryClass(ProviderConfigRepository::class);
+        $builder->setTable('external_contact_providers');
 
         $builder->addId();
 

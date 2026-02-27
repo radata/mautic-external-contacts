@@ -2,16 +2,21 @@
 
 namespace MauticPlugin\ExternalContactsBundle\Entity;
 
-use Mautic\CoreBundle\Entity\CommonRepository;
+use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\EntityRepository;
 
-/**
- * @extends CommonRepository<ProviderConfig>
- */
-class ProviderConfigRepository extends CommonRepository
+class ProviderConfigRepository
 {
+    private EntityRepository $repo;
+
+    public function __construct(EntityManagerInterface $em)
+    {
+        $this->repo = $em->getRepository(ProviderConfig::class);
+    }
+
     public function findActiveByName(string $providerName): ?ProviderConfig
     {
-        return $this->findOneBy([
+        return $this->repo->findOneBy([
             'providerName' => $providerName,
             'isActive'     => true,
         ]);
@@ -22,11 +27,24 @@ class ProviderConfigRepository extends CommonRepository
      */
     public function findAllActive(): array
     {
-        return $this->findBy(['isActive' => true]);
+        return $this->repo->findBy(['isActive' => true]);
     }
 
-    public function getTableAlias(): string
+    /**
+     * @return ProviderConfig[]
+     */
+    public function findAll(): array
     {
-        return 'ecp';
+        return $this->repo->findBy([], ['providerName' => 'ASC']);
+    }
+
+    public function find(int $id): ?ProviderConfig
+    {
+        return $this->repo->find($id);
+    }
+
+    public function findOneBy(array $criteria): ?ProviderConfig
+    {
+        return $this->repo->findOneBy($criteria);
     }
 }
