@@ -54,74 +54,81 @@ class InjectCustomContentSubscriber implements EventSubscriberInterface
         $fieldsJson   = json_encode($protectedFields);
         $providerName = htmlspecialchars($provider, ENT_QUOTES, 'UTF-8');
 
+        // Build CSS rules to immediately style protected fields (works even if script doesn't run)
+        $cssRules = '';
+        foreach ($protectedFields as $alias) {
+            $cssRules .= "#lead_{$alias}, [name=\"lead[{$alias}]\"] {\n";
+            $cssRules .= "  pointer-events: none !important;\n";
+            $cssRules .= "  background-color: #f5f5f5 !important;\n";
+            $cssRules .= "  opacity: 0.7 !important;\n";
+            $cssRules .= "  cursor: not-allowed !important;\n";
+            $cssRules .= "}\n";
+        }
+
         $event->addContent(<<<HTML
 <span class="label label-warning ml-sm" title="Fields managed by this provider are read-only">
     Managed by: {$providerName}
 </span>
+<style>{$cssRules}</style>
 <script>
 (function() {
     var protectedFields = {$fieldsJson};
+    var applied = false;
 
     function disableProtectedFields() {
+        if (applied) return;
+        var found = 0;
         protectedFields.forEach(function(alias) {
-            // Try standard form field selectors
             var selectors = [
                 '#lead_' + alias,
-                '[name="lead[' + alias + ']"]',
-                '#lead_field_' + alias,
-                'select[id*="' + alias + '"]'
+                '[name="lead[' + alias + ']"]'
             ];
-
             selectors.forEach(function(selector) {
                 var els = document.querySelectorAll(selector);
                 els.forEach(function(el) {
                     el.setAttribute('readonly', 'readonly');
                     el.setAttribute('disabled', 'disabled');
-                    el.style.backgroundColor = '#f5f5f5';
-                    el.style.opacity = '0.7';
-                    el.style.cursor = 'not-allowed';
+                    found++;
 
-                    // Add a visual indicator to the parent form-group
                     var formGroup = el.closest('.form-group');
                     if (formGroup && !formGroup.querySelector('.ec-protected-badge')) {
                         var badge = document.createElement('span');
                         badge.className = 'label label-default ec-protected-badge';
-                        badge.style.marginLeft = '5px';
-                        badge.style.fontSize = '10px';
+                        badge.style.cssText = 'margin-left:5px;font-size:10px;';
                         badge.textContent = 'Protected';
                         var label = formGroup.querySelector('label');
-                        if (label) {
-                            label.appendChild(badge);
-                        }
+                        if (label) label.appendChild(badge);
                     }
                 });
             });
         });
-    }
+        if (found > 0) applied = true;
 
-    // Run on DOM ready and after any Mautic AJAX content loads
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', disableProtectedFields);
-    } else {
-        disableProtectedFields();
-    }
-
-    // Re-apply after Mautic reloads content
-    if (typeof MauticVars !== 'undefined') {
-        document.addEventListener('mautic:ajax:loaded', disableProtectedFields);
-    }
-
-    // Also handle form submission to re-enable fields so their values are submitted
-    var form = document.querySelector('form[name="lead"]');
-    if (form) {
-        form.addEventListener('submit', function() {
-            protectedFields.forEach(function(alias) {
-                var el = document.getElementById('lead_' + alias);
-                if (el) {
-                    el.removeAttribute('disabled');
-                }
+        // Intercept form submit to re-enable fields so values are sent
+        var form = document.querySelector('form[name="lead"]');
+        if (form && !form._ecPatched) {
+            form._ecPatched = true;
+            form.addEventListener('submit', function() {
+                protectedFields.forEach(function(alias) {
+                    var el = document.getElementById('lead_' + alias);
+                    if (el) el.removeAttribute('disabled');
+                });
             });
-        });
+        }
+    }
+
+    // Try immediately
+    disableProtectedFields();
+
+    // Retry with delays for AJAX-loaded content
+    setTimeout(disableProtectedFields, 100);
+    setTimeout(disableProtectedFields, 500);
+    setTimeout(disableProtectedFields, 1500);
+
+    // Use Mautic's jQuery if available
+    if (typeof mQuery !== 'undefined') {
+        mQuery(document).ready(disableProtectedFields);
+        mQuery(document).on('ajaxComplete', disableProtectedFields);
     }
 })();
 </script>

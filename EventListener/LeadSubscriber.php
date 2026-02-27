@@ -27,12 +27,23 @@ class LeadSubscriber implements EventSubscriberInterface
 
     public function onLeadPreSave(LeadEvent $event): void
     {
+        $lead = $event->getLead();
+
+        $this->logger->debug('ExternalContacts: LEAD_PRE_SAVE fired for lead ID={id}', [
+            'id' => $lead->getId(),
+        ]);
+
         if ($this->isApiRequest()) {
+            $this->logger->debug('ExternalContacts: skipping — API request');
+
             return;
         }
 
-        $lead     = $event->getLead();
         $provider = $lead->getFieldValue('provider');
+
+        $this->logger->debug('ExternalContacts: provider value = "{provider}"', [
+            'provider' => $provider ?? '(null)',
+        ]);
 
         if (empty($provider)) {
             return;
@@ -41,10 +52,18 @@ class LeadSubscriber implements EventSubscriberInterface
         $config = $this->providerConfigRepository->findActiveByName($provider);
 
         if (!$config) {
+            $this->logger->debug('ExternalContacts: no active config for provider "{provider}"', [
+                'provider' => $provider,
+            ]);
+
             return;
         }
 
         $protectedFields = $config->getProtectedFields();
+
+        $this->logger->debug('ExternalContacts: protected fields = [{fields}]', [
+            'fields' => implode(', ', $protectedFields),
+        ]);
 
         if (empty($protectedFields)) {
             return;
@@ -56,7 +75,16 @@ class LeadSubscriber implements EventSubscriberInterface
 
         $updatedFields = $lead->getUpdatedFields();
         $changes       = $lead->getChanges();
-        $reverted      = [];
+
+        $this->logger->debug('ExternalContacts: updatedFields keys = [{keys}]', [
+            'keys' => implode(', ', array_keys($updatedFields)),
+        ]);
+        $this->logger->debug('ExternalContacts: changes keys = [{keys}], fields keys = [{fieldKeys}]', [
+            'keys'      => implode(', ', array_keys($changes)),
+            'fieldKeys' => implode(', ', array_keys($changes['fields'] ?? [])),
+        ]);
+
+        $reverted = [];
 
         foreach ($protectedFields as $fieldAlias) {
             if (!array_key_exists($fieldAlias, $updatedFields)) {
@@ -66,6 +94,13 @@ class LeadSubscriber implements EventSubscriberInterface
             // Get the original value from the changes array
             if (isset($changes['fields'][$fieldAlias])) {
                 $originalValue = $changes['fields'][$fieldAlias][0];
+
+                $this->logger->debug('ExternalContacts: reverting "{field}" from "{new}" back to "{orig}"', [
+                    'field' => $fieldAlias,
+                    'new'   => $updatedFields[$fieldAlias],
+                    'orig'  => $originalValue,
+                ]);
+
                 $lead->addUpdatedField($fieldAlias, $originalValue, $updatedFields[$fieldAlias]);
                 $reverted[] = $fieldAlias;
             }
