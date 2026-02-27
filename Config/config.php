@@ -3,7 +3,7 @@
 return [
     'name'        => 'External Contacts',
     'description' => 'Protect contact fields managed by external providers from UI editing',
-    'version'     => '1.0.1',
+    'version'     => '1.0.2',
     'author'      => 'Radata',
 
     'routes' => [
