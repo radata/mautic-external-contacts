@@ -30,21 +30,68 @@ class InjectCustomContentSubscriber implements EventSubscriberInterface
     {
         $event->addScriptDeclaration(<<<'JS'
 (function() {
-    /**
-     * ExternalContacts: disable protected fields on the lead edit form.
-     * Reads config from window._ecProtectedFields (set via customContent injection).
-     * Hooks into Mautic's onPageLoad so it works with AJAX navigation.
-     */
-    function ecApplyProtection(container) {
-        var config = window._ecProtectedFields;
-        if (!config || !config.fields || !config.fields.length) return;
+    var ecIsBound = false;
 
-        var fields = config.fields;
+    function ecReadConfig(container) {
+        var scope = mQuery(container || document);
+        var configEl = scope.find('.ec-protected-config[data-ec-protected-fields]').first();
+        if (!configEl.length) {
+            configEl = mQuery('.ec-protected-config[data-ec-protected-fields]').first();
+        }
+        if (!configEl.length) {
+            return null;
+        }
+
+        var fields = [];
+        try {
+            fields = JSON.parse(configEl.attr('data-ec-protected-fields') || '[]');
+        } catch (e) {
+            return null;
+        }
+        if (!Array.isArray(fields) || !fields.length) {
+            return null;
+        }
+
+        var leadId = parseInt(configEl.attr('data-ec-lead-id') || '0', 10);
+        if (isNaN(leadId)) {
+            leadId = 0;
+        }
+
+        return {
+            fields: fields,
+            provider: configEl.attr('data-ec-provider') || '',
+            leadId: leadId
+        };
+    }
+
+    function ecMatchesLead(formEl, config) {
+        if (!config || !config.leadId) {
+            return true;
+        }
+
+        var leadIdInput = mQuery(formEl).find('#lead_id, input[name="lead[id]"]').first();
+        if (!leadIdInput.length) {
+            return true;
+        }
+
+        var currentLeadId = parseInt(leadIdInput.val() || '0', 10);
+        if (isNaN(currentLeadId) || !currentLeadId) {
+            return true;
+        }
+
+        return currentLeadId === config.leadId;
+    }
+
+    function ecApplyProtection(container) {
+        var config = ecReadConfig(container);
+        if (!config) return;
+
         var formEl = mQuery(container).find('form[name="lead"]');
         if (!formEl.length) formEl = mQuery('form[name="lead"]');
         if (!formEl.length) return;
+        if (!ecMatchesLead(formEl, config)) return;
 
-        fields.forEach(function(alias) {
+        config.fields.forEach(function(alias) {
             var selectors = [
                 '#lead_' + alias,
                 '[name="lead[' + alias + ']"]'
@@ -72,27 +119,39 @@ class InjectCustomContentSubscriber implements EventSubscriberInterface
                 });
             });
         });
-
-        // Patch form submit to re-enable disabled fields so values are sent
-        if (!formEl.data('ec-patched')) {
-            formEl.data('ec-patched', true);
-            formEl.on('submit', function() {
-                fields.forEach(function(alias) {
-                    mQuery('#lead_' + alias).removeAttr('disabled');
-                });
-            });
-        }
     }
 
-    // Hook into Mautic's page load lifecycle
-    mQuery(document).on('mautic:onPageLoad:after', function(event, container) {
-        ecApplyProtection(container);
-    });
+    function ecBind() {
+        if (ecIsBound) return;
+        ecIsBound = true;
 
-    // Also run on initial full page load
-    mQuery(document).ready(function() {
-        ecApplyProtection('#app-content');
-    });
+        mQuery(document).on('mautic:onPageLoad:after', function(event, container) {
+            ecApplyProtection(container);
+        });
+
+        mQuery(document).ready(function() {
+            ecApplyProtection('#app-content');
+        });
+    }
+
+    if (typeof window.mQuery === 'function') {
+        ecBind();
+        return;
+    }
+
+    var tries = 0;
+    var waitForMQuery = setInterval(function() {
+        if (typeof window.mQuery === 'function') {
+            clearInterval(waitForMQuery);
+            ecBind();
+            return;
+        }
+
+        tries++;
+        if (tries > 80) {
+            clearInterval(waitForMQuery);
+        }
+    }, 50);
 })();
 JS
         );
@@ -130,11 +189,12 @@ JS
         $protectedFields[] = 'provider';
         $protectedFields   = array_unique($protectedFields);
 
-        $fieldsJson   = json_encode($protectedFields);
-        $providerName = htmlspecialchars($provider, ENT_QUOTES, 'UTF-8');
+        $fieldsJson       = json_encode(array_values($protectedFields));
+        $fieldsJsonAttr   = htmlspecialchars($fieldsJson ?: '[]', ENT_QUOTES, 'UTF-8');
+        $providerName     = htmlspecialchars($provider, ENT_QUOTES, 'UTF-8');
+        $leadId           = (int) $lead->getId();
 
-        // Set JS global variable with config (read by the global script from injectCustomAssets)
-        // Also include inline CSS as fallback for immediate visual protection
+        // Inline CSS fallback for immediate visual protection while JS initializes.
         $cssRules = '';
         foreach ($protectedFields as $alias) {
             $cssRules .= "#lead_{$alias}, [name=\"lead[{$alias}]\"] { ";
@@ -146,8 +206,11 @@ JS
 <span class="label label-warning ml-sm" title="Fields managed by this provider are read-only">
     Managed by: {$providerName}
 </span>
+<span class="ec-protected-config hide"
+      data-ec-provider="{$providerName}"
+      data-ec-lead-id="{$leadId}"
+      data-ec-protected-fields="{$fieldsJsonAttr}"></span>
 <style>{$cssRules}</style>
-<script>window._ecProtectedFields = {fields: {$fieldsJson}, provider: "{$providerName}"};</script>
 HTML);
     }
 }

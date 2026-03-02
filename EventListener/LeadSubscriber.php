@@ -3,6 +3,7 @@
 namespace MauticPlugin\ExternalContactsBundle\EventListener;
 
 use Doctrine\DBAL\Connection;
+use Doctrine\ORM\EntityManagerInterface;
 use Mautic\LeadBundle\Event\LeadEvent;
 use Mautic\LeadBundle\LeadEvents;
 use MauticPlugin\ExternalContactsBundle\Entity\ProviderConfigRepository;
@@ -12,17 +13,15 @@ use Symfony\Component\HttpFoundation\RequestStack;
 
 class LeadSubscriber implements EventSubscriberInterface
 {
-    /**
-     * Stores original values to restore after save.
-     * Keyed by lead ID → [alias => originalValue].
-     *
-     * @var array<int, array<string, mixed>>
-     */
+    /** @var array<int, array<string, mixed>> */
     private array $pendingRestores = [];
+    /** @var string[]|null */
+    private ?array $leadColumns = null;
 
     public function __construct(
         private ProviderConfigRepository $providerConfigRepository,
         private RequestStack $requestStack,
+        private EntityManagerInterface $entityManager,
         private Connection $connection,
         private LoggerInterface $logger,
     ) {
@@ -40,109 +39,76 @@ class LeadSubscriber implements EventSubscriberInterface
     {
         $lead = $event->getLead();
 
-        $this->logger->debug('ExternalContacts: LEAD_PRE_SAVE fired for lead ID={id}', [
-            'id' => $lead->getId(),
-        ]);
-
         if ($this->isApiRequest()) {
-            $this->logger->debug('ExternalContacts: skipping — API request');
-
             return;
         }
 
-        // For new contacts, nothing to protect
-        if (!$lead->getId()) {
+        $leadId = (int) $lead->getId();
+        if ($leadId < 1) {
             return;
         }
 
-        $provider = $lead->getFieldValue('provider');
-
-        $this->logger->debug('ExternalContacts: provider value = "{provider}"', [
-            'provider' => $provider ?? '(null)',
-        ]);
-
-        if (empty($provider)) {
+        $leadTable   = MAUTIC_TABLE_PREFIX.'leads';
+        $leadColumns = $this->getLeadColumns($leadTable);
+        if (empty($leadColumns) || !in_array('provider', $leadColumns, true)) {
             return;
         }
 
-        $config = $this->providerConfigRepository->findActiveByName($provider);
+        $persistedProvider = $this->connection->fetchOne(
+            sprintf('SELECT provider FROM `%s` WHERE id = :id', $this->escapeSqlIdentifier($leadTable)),
+            ['id' => $leadId]
+        );
+        if (!is_string($persistedProvider) || '' === trim($persistedProvider)) {
+            return;
+        }
 
+        $provider = trim($persistedProvider);
+        $config   = $this->providerConfigRepository->findActiveByName($provider);
         if (!$config) {
-            $this->logger->debug('ExternalContacts: no active config for provider "{provider}"', [
-                'provider' => $provider,
-            ]);
-
             return;
         }
 
-        $protectedFields = $config->getProtectedFields();
-
+        $protectedFields = $this->normalizeProtectedFields(
+            array_merge($config->getProtectedFields(), ['provider'])
+        );
+        $protectedFields = array_values(array_intersect($protectedFields, $leadColumns));
         if (empty($protectedFields)) {
             return;
         }
 
-        // Always protect the provider field itself from UI changes
-        $protectedFields[] = 'provider';
-        $protectedFields   = array_unique($protectedFields);
-
-        $this->logger->debug('ExternalContacts: protected fields = [{fields}]', [
-            'fields' => implode(', ', $protectedFields),
-        ]);
-
-        $changes = $lead->getChanges();
-        $updatedFields = $lead->getUpdatedFields();
-
-        $this->logger->debug('ExternalContacts: updatedFields keys = [{keys}]', [
-            'keys' => implode(', ', array_keys($updatedFields)),
-        ]);
-        $this->logger->debug('ExternalContacts: changes keys = [{keys}], fields keys = [{fieldKeys}]', [
-            'keys'      => implode(', ', array_keys($changes)),
-            'fieldKeys' => implode(', ', array_keys($changes['fields'] ?? [])),
-        ]);
-
-        // Collect original values for protected fields that were changed
-        $toRestore = [];
-
-        foreach ($protectedFields as $fieldAlias) {
-            // Check if this field was changed (via addUpdatedField / changes tracking)
-            if (isset($changes['fields'][$fieldAlias])) {
-                $originalValue = $changes['fields'][$fieldAlias][0]; // [0] = old value
-                $toRestore[$fieldAlias] = $originalValue;
-
-                $this->logger->info(
-                    'ExternalContacts: will restore "{field}" from "{new}" back to "{orig}" after save',
-                    [
-                        'field' => $fieldAlias,
-                        'new'   => $changes['fields'][$fieldAlias][1] ?? '?',
-                        'orig'  => $originalValue,
-                    ]
-                );
-            }
+        $persistedValues = $this->fetchPersistedLeadValues($leadTable, $leadId, $protectedFields);
+        if (empty($persistedValues)) {
+            return;
         }
 
-        if (!empty($toRestore)) {
-            $this->pendingRestores[$lead->getId()] = $toRestore;
+        // Keep a post-save hard restore in case any later listener mutates values again.
+        $this->pendingRestores[$leadId] = $persistedValues;
+
+        // Also restore in-entity before flush so ORM writes protected values back immediately.
+        foreach ($persistedValues as $fieldAlias => $originalValue) {
+            $currentValue = $lead->getFieldValue($fieldAlias);
+            if ($this->valuesDiffer($currentValue, $originalValue)) {
+                $lead->addUpdatedField($fieldAlias, $originalValue, $currentValue);
+            }
         }
     }
 
     public function onLeadPostSave(LeadEvent $event): void
     {
-        $lead   = $event->getLead();
-        $leadId = $lead->getId();
+        if ($this->isApiRequest()) {
+            return;
+        }
 
-        if (empty($this->pendingRestores[$leadId])) {
+        $lead   = $event->getLead();
+        $leadId = (int) $lead->getId();
+
+        if ($leadId < 1 || empty($this->pendingRestores[$leadId])) {
             return;
         }
 
         $toRestore = $this->pendingRestores[$leadId];
         unset($this->pendingRestores[$leadId]);
 
-        $this->logger->info('ExternalContacts: restoring {count} protected fields for lead #{id} via DBAL', [
-            'count' => count($toRestore),
-            'id'    => $leadId,
-        ]);
-
-        // Direct DBAL UPDATE to restore original values — bypasses ORM entirely
         try {
             $this->connection->update(
                 MAUTIC_TABLE_PREFIX.'leads',
@@ -150,12 +116,11 @@ class LeadSubscriber implements EventSubscriberInterface
                 ['id' => $leadId]
             );
 
-            $this->logger->info('ExternalContacts: successfully restored fields [{fields}] for lead #{id}', [
-                'fields' => implode(', ', array_keys($toRestore)),
-                'id'     => $leadId,
-            ]);
-        } catch (\Exception $e) {
-            $this->logger->error('ExternalContacts: DBAL restore failed for lead #{id}: {msg}', [
+            if ($this->entityManager->contains($lead)) {
+                $this->entityManager->refresh($lead);
+            }
+        } catch (\Throwable $e) {
+            $this->logger->error('ExternalContacts: failed to restore protected fields for lead #{id}: {msg}', [
                 'id'  => $leadId,
                 'msg' => $e->getMessage(),
             ]);
@@ -167,11 +132,109 @@ class LeadSubscriber implements EventSubscriberInterface
         $request = $this->requestStack->getCurrentRequest();
 
         if (!$request) {
-            return false;
+            // No HTTP request context (CLI/worker). Do not enforce UI-only locks.
+            return true;
         }
 
-        $route = $request->attributes->get('_route', '');
+        $route = (string) $request->attributes->get('_route', '');
+        if (str_starts_with($route, 'mautic_api_')) {
+            return true;
+        }
 
-        return str_starts_with($route, 'mautic_api_');
+        return str_starts_with($request->getPathInfo(), '/api/');
+    }
+
+    /**
+     * @param array<int, mixed> $fields
+     *
+     * @return string[]
+     */
+    private function normalizeProtectedFields(array $fields): array
+    {
+        $normalized = [];
+        foreach ($fields as $field) {
+            if (!is_string($field)) {
+                continue;
+            }
+
+            $alias = trim($field);
+            if ('' === $alias) {
+                continue;
+            }
+
+            $normalized[] = $alias;
+        }
+
+        return array_values(array_unique($normalized));
+    }
+
+    /**
+     * @return string[]
+     */
+    private function getLeadColumns(string $leadTable): array
+    {
+        if (null !== $this->leadColumns) {
+            return $this->leadColumns;
+        }
+
+        try {
+            $columns = $this->connection->createSchemaManager()->listTableColumns($leadTable);
+        } catch (\Throwable $e) {
+            $this->logger->error('ExternalContacts: unable to read lead table schema: {msg}', [
+                'msg' => $e->getMessage(),
+            ]);
+
+            return [];
+        }
+
+        $this->leadColumns = [];
+        foreach ($columns as $column) {
+            $this->leadColumns[] = $column->getName();
+        }
+
+        return $this->leadColumns;
+    }
+
+    /**
+     * @param string[] $protectedFields
+     *
+     * @return array<string, mixed>
+     */
+    private function fetchPersistedLeadValues(string $leadTable, int $leadId, array $protectedFields): array
+    {
+        $selectColumns = [];
+        foreach ($protectedFields as $fieldAlias) {
+            $selectColumns[] = sprintf('`%s`', $this->escapeSqlIdentifier($fieldAlias));
+        }
+
+        $sql = sprintf(
+            'SELECT %s FROM `%s` WHERE id = :id',
+            implode(', ', $selectColumns),
+            $this->escapeSqlIdentifier($leadTable)
+        );
+
+        $row = $this->connection->fetchAssociative($sql, ['id' => $leadId]);
+        if (!is_array($row)) {
+            return [];
+        }
+
+        return $row;
+    }
+
+    private function valuesDiffer(mixed $first, mixed $second): bool
+    {
+        if (is_array($first)) {
+            $first = implode('|', $first);
+        }
+        if (is_array($second)) {
+            $second = implode('|', $second);
+        }
+
+        return (string) ($first ?? '') !== (string) ($second ?? '');
+    }
+
+    private function escapeSqlIdentifier(string $identifier): string
+    {
+        return str_replace('`', '``', $identifier);
     }
 }
