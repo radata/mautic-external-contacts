@@ -4,6 +4,7 @@ namespace MauticPlugin\ExternalContactsBundle\EventListener;
 
 use Doctrine\DBAL\Connection;
 use Doctrine\ORM\EntityManagerInterface;
+use Mautic\CoreBundle\Service\FlashBag;
 use Mautic\LeadBundle\Event\LeadEvent;
 use Mautic\LeadBundle\LeadEvents;
 use MauticPlugin\ExternalContactsBundle\Entity\ProviderConfigRepository;
@@ -15,6 +16,8 @@ class LeadSubscriber implements EventSubscriberInterface
 {
     /** @var array<int, array<string, mixed>> */
     private array $pendingRestores = [];
+    /** @var array<int, array{provider: string, fields: string[]}> */
+    private array $pendingWarnings = [];
     /** @var string[]|null */
     private ?array $leadColumns = null;
 
@@ -23,6 +26,7 @@ class LeadSubscriber implements EventSubscriberInterface
         private RequestStack $requestStack,
         private EntityManagerInterface $entityManager,
         private Connection $connection,
+        private FlashBag $flashBag,
         private LoggerInterface $logger,
     ) {
     }
@@ -83,13 +87,23 @@ class LeadSubscriber implements EventSubscriberInterface
 
         // Keep a post-save hard restore in case any later listener mutates values again.
         $this->pendingRestores[$leadId] = $persistedValues;
+        $blockedAliases                 = [];
 
         // Also restore in-entity before flush so ORM writes protected values back immediately.
         foreach ($persistedValues as $fieldAlias => $originalValue) {
             $currentValue = $lead->getFieldValue($fieldAlias);
             if ($this->valuesDiffer($currentValue, $originalValue)) {
                 $lead->addUpdatedField($fieldAlias, $originalValue, $currentValue);
+                $blockedAliases[] = $fieldAlias;
             }
+        }
+
+        if (!empty($blockedAliases)) {
+            sort($blockedAliases);
+            $this->pendingWarnings[$leadId] = [
+                'provider' => $provider,
+                'fields'   => $blockedAliases,
+            ];
         }
     }
 
@@ -124,6 +138,21 @@ class LeadSubscriber implements EventSubscriberInterface
                 'id'  => $leadId,
                 'msg' => $e->getMessage(),
             ]);
+        }
+
+        if (!empty($this->pendingWarnings[$leadId])) {
+            $warning = $this->pendingWarnings[$leadId];
+            unset($this->pendingWarnings[$leadId]);
+
+            $this->flashBag->add(
+                'external_contacts.notice.protected_fields_ignored',
+                [
+                    '%provider%' => $warning['provider'],
+                    '%fields%'   => implode(', ', $warning['fields']),
+                ],
+                FlashBag::LEVEL_WARNING,
+                'messages'
+            );
         }
     }
 
