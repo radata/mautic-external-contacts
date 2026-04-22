@@ -24,100 +24,181 @@ class InjectCustomContentSubscriber implements EventSubscriberInterface
     }
 
     /**
-     * Inject a global JS that hooks into Mautic.onPageLoad — runs on every page load (AJAX or full).
+     * Inject a global JS that applies UI protection to lead/company forms on every page load.
      */
     public function injectCustomAssets(CustomAssetsEvent $event): void
     {
-        $event->addScriptDeclaration(<<<'JS'
+        $providerConfigs = [];
+        foreach ($this->providerConfigRepository->findAllActive() as $config) {
+            $providerConfigs[$config->getProviderName()] = [
+                'lead'    => $config->getProtectedFields(),
+                'company' => $config->getProtectedCompanyFields(),
+            ];
+        }
+
+        $providerConfigsJson = json_encode(
+            $providerConfigs,
+            JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+        );
+        if (false === $providerConfigsJson) {
+            $providerConfigsJson = '{}';
+        }
+
+        $script = str_replace('__EC_PROVIDER_CONFIGS__', $providerConfigsJson, <<<'JS'
 (function() {
+    var ecProviderConfigs = __EC_PROVIDER_CONFIGS__;
     var ecIsBound = false;
 
-    function ecReadConfig(container) {
-        var scope = mQuery(container || document);
-        var configEl = scope.find('.ec-protected-config[data-ec-protected-fields]').first();
-        if (!configEl.length) {
-            configEl = mQuery('.ec-protected-config[data-ec-protected-fields]').first();
-        }
-        if (!configEl.length) {
-            return null;
-        }
-
-        var fields = [];
-        try {
-            fields = JSON.parse(configEl.attr('data-ec-protected-fields') || '[]');
-        } catch (e) {
-            return null;
-        }
-        if (!Array.isArray(fields) || !fields.length) {
-            return null;
-        }
-
-        var leadId = parseInt(configEl.attr('data-ec-lead-id') || '0', 10);
-        if (isNaN(leadId)) {
-            leadId = 0;
-        }
-
-        return {
-            fields: fields,
-            provider: configEl.attr('data-ec-provider') || '',
-            leadId: leadId
-        };
+    function ecNormalize(value) {
+        return String(value || '').trim();
     }
 
-    function ecMatchesLead(formEl, config) {
-        if (!config || !config.leadId) {
-            return true;
+    function ecGetFormConfig(container) {
+        var scope = mQuery(container || document);
+        var formEl = scope.find('form[name="lead"]').first();
+        if (formEl.length) {
+            return { formEl: formEl, object: 'lead', providerField: 'provider' };
         }
 
-        var leadIdInput = mQuery(formEl).find('#lead_id, input[name="lead[id]"]').first();
-        if (!leadIdInput.length) {
-            return true;
+        formEl = scope.find('form[name="company"]').first();
+        if (formEl.length) {
+            return { formEl: formEl, object: 'company', providerField: 'companyprovider' };
         }
 
-        var currentLeadId = parseInt(leadIdInput.val() || '0', 10);
-        if (isNaN(currentLeadId) || !currentLeadId) {
-            return true;
+        formEl = mQuery('form[name="lead"]').first();
+        if (formEl.length) {
+            return { formEl: formEl, object: 'lead', providerField: 'provider' };
         }
 
-        return currentLeadId === config.leadId;
+        formEl = mQuery('form[name="company"]').first();
+        if (formEl.length) {
+            return { formEl: formEl, object: 'company', providerField: 'companyprovider' };
+        }
+
+        return null;
+    }
+
+    function ecGetEntityId(formConfig) {
+        var idSelectors = [
+            '#' + formConfig.object + '_id',
+            'input[name="' + formConfig.object + '[id]"]'
+        ];
+        var idInput = formConfig.formEl.find(idSelectors.join(', ')).first();
+        if (!idInput.length) {
+            return 0;
+        }
+
+        var entityId = parseInt(idInput.val() || '0', 10);
+        return isNaN(entityId) ? 0 : entityId;
+    }
+
+    function ecGetField(formConfig, alias) {
+        var selectors = [
+            '#' + formConfig.object + '_' + alias,
+            '[name="' + formConfig.object + '[' + alias + ']"]'
+        ];
+
+        return formConfig.formEl.find(selectors.join(', ')).first();
+    }
+
+    function ecGetProvider(formConfig) {
+        var field = ecGetField(formConfig, formConfig.providerField);
+        if (!field.length) {
+            return '';
+        }
+
+        return ecNormalize(field.val());
+    }
+
+    function ecGetProtectedFields(formConfig, provider) {
+        var providerConfig = ecProviderConfigs[provider] || {};
+        var fields = providerConfig[formConfig.object] || [];
+        var seen = {};
+        var result = [];
+
+        if (!Array.isArray(fields)) {
+            fields = [];
+        }
+
+        fields.concat([formConfig.providerField]).forEach(function(alias) {
+            alias = ecNormalize(alias);
+            if (!alias || seen[alias]) {
+                return;
+            }
+
+            seen[alias] = true;
+            result.push(alias);
+        });
+
+        return result;
+    }
+
+    function ecEnsureNotice(formConfig, provider) {
+        var notice = formConfig.formEl.prev('.ec-managed-notice');
+        var noticeText = 'Managed by: ' + provider;
+
+        if (!notice.length) {
+            notice = mQuery('<div class="alert alert-warning ec-managed-notice">').text(noticeText);
+            formConfig.formEl.before(notice);
+            return;
+        }
+
+        notice.text(noticeText);
+    }
+
+    function ecLockField(formConfig, alias) {
+        var field = ecGetField(formConfig, alias);
+        if (!field.length) {
+            return;
+        }
+
+        field.each(function() {
+            var el = mQuery(this);
+            el.attr('readonly', 'readonly');
+            el.attr('disabled', 'disabled');
+            el.css({
+                'background-color': '#f5f5f5',
+                'opacity': '0.7',
+                'cursor': 'not-allowed',
+                'pointer-events': 'none'
+            });
+
+            if (el.hasClass('chosen-select') || el.next('.chosen-container').length) {
+                el.trigger('chosen:updated');
+            }
+
+            var formGroup = el.closest('.form-group');
+            if (formGroup.length && !formGroup.find('.ec-protected-badge[data-ec-alias="' + alias + '"]').length) {
+                var badge = mQuery('<span>')
+                    .addClass('label label-default ec-protected-badge')
+                    .attr('data-ec-alias', alias)
+                    .css({'margin-left': '5px', 'font-size': '10px'})
+                    .text('Protected');
+                formGroup.find('label').first().append(badge);
+            }
+        });
     }
 
     function ecApplyProtection(container) {
-        var config = ecReadConfig(container);
-        if (!config) return;
+        var formConfig = ecGetFormConfig(container);
+        var entityId;
+        var provider;
+        var protectedFields;
 
-        var formEl = mQuery(container).find('form[name="lead"]');
-        if (!formEl.length) formEl = mQuery('form[name="lead"]');
-        if (!formEl.length) return;
-        if (!ecMatchesLead(formEl, config)) return;
+        if (!formConfig) return;
 
-        config.fields.forEach(function(alias) {
-            var selectors = [
-                '#lead_' + alias,
-                '[name="lead[' + alias + ']"]'
-            ];
-            selectors.forEach(function(selector) {
-                mQuery(formEl).find(selector).each(function() {
-                    var el = mQuery(this);
-                    el.attr('readonly', 'readonly');
-                    el.attr('disabled', 'disabled');
-                    el.css({
-                        'background-color': '#f5f5f5',
-                        'opacity': '0.7',
-                        'cursor': 'not-allowed',
-                        'pointer-events': 'none'
-                    });
+        entityId = ecGetEntityId(formConfig);
+        if (!entityId) return;
 
-                    var formGroup = el.closest('.form-group');
-                    if (formGroup.length && !formGroup.find('.ec-protected-badge').length) {
-                        var badge = mQuery('<span>')
-                            .addClass('label label-default ec-protected-badge')
-                            .css({'margin-left': '5px', 'font-size': '10px'})
-                            .text('Protected');
-                        formGroup.find('label').first().append(badge);
-                    }
-                });
-            });
+        provider = ecGetProvider(formConfig);
+        if (!provider || !ecProviderConfigs[provider]) return;
+
+        protectedFields = ecGetProtectedFields(formConfig, provider);
+        if (!protectedFields.length) return;
+
+        ecEnsureNotice(formConfig, provider);
+        protectedFields.forEach(function(alias) {
+            ecLockField(formConfig, alias);
         });
     }
 
@@ -155,10 +236,12 @@ class InjectCustomContentSubscriber implements EventSubscriberInterface
 })();
 JS
         );
+
+        $event->addScriptDeclaration($script);
     }
 
     /**
-     * Inject the badge + set the JS config variable with protected fields data.
+     * Inject a provider badge on lead views that already expose a custom content hook.
      */
     public function injectCustomContent(CustomContentEvent $event): void
     {
@@ -185,32 +268,12 @@ JS
             return;
         }
 
-        $protectedFields = $config->getProtectedFields();
-        $protectedFields[] = 'provider';
-        $protectedFields   = array_unique($protectedFields);
-
-        $fieldsJson       = json_encode(array_values($protectedFields));
-        $fieldsJsonAttr   = htmlspecialchars($fieldsJson ?: '[]', ENT_QUOTES, 'UTF-8');
         $providerName     = htmlspecialchars($provider, ENT_QUOTES, 'UTF-8');
-        $leadId           = (int) $lead->getId();
-
-        // Inline CSS fallback for immediate visual protection while JS initializes.
-        $cssRules = '';
-        foreach ($protectedFields as $alias) {
-            $cssRules .= "#lead_{$alias}, [name=\"lead[{$alias}]\"] { ";
-            $cssRules .= "pointer-events:none!important; background-color:#f5f5f5!important; ";
-            $cssRules .= "opacity:0.7!important; cursor:not-allowed!important; }\n";
-        }
 
         $event->addContent(<<<HTML
 <span class="label label-warning ml-sm" title="Fields managed by this provider are read-only">
     Managed by: {$providerName}
 </span>
-<span class="ec-protected-config hide"
-      data-ec-provider="{$providerName}"
-      data-ec-lead-id="{$leadId}"
-      data-ec-protected-fields="{$fieldsJsonAttr}"></span>
-<style>{$cssRules}</style>
 HTML);
     }
 }

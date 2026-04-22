@@ -20,7 +20,8 @@
                 <thead>
                     <tr>
                         <th>Provider Name</th>
-                        <th>Protected Fields</th>
+                        <th>Lead Fields</th>
+                        <th>Company Fields</th>
                         <th>Active</th>
                         <th>Date Added</th>
                         <th style="width: 150px;">Actions</th>
@@ -29,7 +30,7 @@
                 <tbody>
                     {% if providers is empty %}
                         <tr>
-                            <td colspan="5" class="text-center pa-md">
+                            <td colspan="6" class="text-center pa-md">
                                 <p class="text-muted">No providers configured yet.</p>
                                 <a href="{{ path('mautic_external_contacts_provider_new') }}" class="btn btn-primary">
                                     Add your first provider
@@ -47,6 +48,15 @@
                                 <td>
                                     {% for field in provider.protectedFields %}
                                         <span class="label label-info">{{ field }}</span>
+                                    {% else %}
+                                        <span class="text-muted">No managed lead fields</span>
+                                    {% endfor %}
+                                </td>
+                                <td>
+                                    {% for field in provider.protectedCompanyFields %}
+                                        <span class="label label-primary">{{ field }}</span>
+                                    {% else %}
+                                        <span class="text-muted">No managed company fields</span>
                                     {% endfor %}
                                 </td>
                                 <td>

@@ -31,30 +31,71 @@
                                placeholder="e.g. APP, hollandworx"
                                required>
                         <p class="help-block">
-                            This must match the value stored in the contact's <code>provider</code> field.
+                            This must match the value stored in the contact <code>provider</code> field and the company <code>companyprovider</code> field.
                         </p>
                     </div>
 
-                    <div class="form-group">
-                        <label for="protected_fields" class="control-label">
-                            Protected Fields
-                        </label>
-                        <select id="protected_fields"
-                                name="protected_fields[]"
-                                class="form-control chosen-select"
-                                multiple
-                                data-placeholder="Select fields to protect...">
-                            {% for alias, label in fieldChoices %}
-                                <option value="{{ alias }}"
-                                    {% if alias in entity.protectedFields %}selected{% endif %}>
-                                    {{ label }}
-                                </option>
-                            {% endfor %}
-                        </select>
-                        <p class="help-block">
-                            These fields will be read-only in the Mautic UI when a contact has this provider set.
-                            The <code>provider</code> field is always protected automatically.
-                        </p>
+                    <div class="panel panel-default mb-lg">
+                        <div class="panel-heading">
+                            <ul class="nav nav-tabs nav-tabs-contained mb-0" role="tablist">
+                                <li class="active" role="presentation">
+                                    <a href="#provider-lead-fields" role="tab" data-toggle="tab">Lead Fields</a>
+                                </li>
+                                <li role="presentation">
+                                    <a href="#provider-company-fields" role="tab" data-toggle="tab">Company Fields</a>
+                                </li>
+                            </ul>
+                        </div>
+                        <div class="panel-body">
+                            <div class="tab-content">
+                                <div class="tab-pane fade in active" id="provider-lead-fields">
+                                    <div class="form-group mb-0">
+                                        <label for="protected_fields" class="control-label">
+                                            Managed Lead Fields
+                                        </label>
+                                        <select id="protected_fields"
+                                                name="protected_fields[]"
+                                                class="form-control chosen-select"
+                                                multiple
+                                                data-placeholder="Select lead fields to protect...">
+                                            {% for alias, label in leadFieldChoices %}
+                                                <option value="{{ alias }}"
+                                                    {% if alias in entity.protectedFields %}selected{% endif %}>
+                                                    {{ label }}
+                                                </option>
+                                            {% endfor %}
+                                        </select>
+                                        <p class="help-block mb-0">
+                                            These fields will be read-only in the Mautic UI when a contact has this provider set.
+                                            The <code>provider</code> field is always protected automatically.
+                                        </p>
+                                    </div>
+                                </div>
+                                <div class="tab-pane fade" id="provider-company-fields">
+                                    <div class="form-group mb-0">
+                                        <label for="protected_company_fields" class="control-label">
+                                            Managed Company Fields
+                                        </label>
+                                        <select id="protected_company_fields"
+                                                name="protected_company_fields[]"
+                                                class="form-control chosen-select"
+                                                multiple
+                                                data-placeholder="Select company fields to protect...">
+                                            {% for alias, label in companyFieldChoices %}
+                                                <option value="{{ alias }}"
+                                                    {% if alias in entity.protectedCompanyFields %}selected{% endif %}>
+                                                    {{ label }}
+                                                </option>
+                                            {% endfor %}
+                                        </select>
+                                        <p class="help-block mb-0">
+                                            These fields will be read-only in the Mautic UI when a company has this provider set.
+                                            The <code>companyprovider</code> field is always protected automatically.
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="form-group">
@@ -88,7 +129,7 @@
     // Initialize chosen-select for the multi-select field
     document.addEventListener('DOMContentLoaded', function() {
         if (typeof mQuery !== 'undefined') {
-            mQuery('#protected_fields').chosen({
+            mQuery('.chosen-select').chosen({
                 width: '100%',
                 search_contains: true
             });

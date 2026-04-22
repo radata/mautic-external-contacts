@@ -21,6 +21,7 @@ class M001_CreateProviderConfigTable extends AbstractMigration
                 id INT UNSIGNED AUTO_INCREMENT NOT NULL,
                 provider_name VARCHAR(191) NOT NULL,
                 protected_fields JSON NOT NULL,
+                protected_company_fields JSON NOT NULL,
                 is_active TINYINT(1) NOT NULL DEFAULT 1,
                 date_added DATETIME DEFAULT NULL,
                 date_modified DATETIME DEFAULT NULL,

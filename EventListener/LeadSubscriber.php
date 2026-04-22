@@ -5,8 +5,10 @@ namespace MauticPlugin\ExternalContactsBundle\EventListener;
 use Doctrine\DBAL\Connection;
 use Doctrine\ORM\EntityManagerInterface;
 use Mautic\CoreBundle\Service\FlashBag;
+use Mautic\LeadBundle\Event\CompanyEvent;
 use Mautic\LeadBundle\Event\LeadEvent;
 use Mautic\LeadBundle\LeadEvents;
+use MauticPlugin\ExternalContactsBundle\Entity\ProviderConfig;
 use MauticPlugin\ExternalContactsBundle\Entity\ProviderConfigRepository;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -14,12 +16,12 @@ use Symfony\Component\HttpFoundation\RequestStack;
 
 class LeadSubscriber implements EventSubscriberInterface
 {
-    /** @var array<int, array<string, mixed>> */
+    /** @var array<string, array<string, mixed>> */
     private array $pendingRestores = [];
-    /** @var array<int, array{provider: string, fields: string[]}> */
+    /** @var array<string, array{provider: string, fields: string[]}> */
     private array $pendingWarnings = [];
-    /** @var string[]|null */
-    private ?array $leadColumns = null;
+    /** @var array<string, string[]> */
+    private array $tableColumns = [];
 
     public function __construct(
         private ProviderConfigRepository $providerConfigRepository,
@@ -34,126 +36,39 @@ class LeadSubscriber implements EventSubscriberInterface
     public static function getSubscribedEvents(): array
     {
         return [
-            LeadEvents::LEAD_PRE_SAVE  => ['onLeadPreSave', 100],
-            LeadEvents::LEAD_POST_SAVE => ['onLeadPostSave', -100],
+            LeadEvents::LEAD_PRE_SAVE     => ['onLeadPreSave', 100],
+            LeadEvents::LEAD_POST_SAVE    => ['onLeadPostSave', -100],
+            LeadEvents::COMPANY_PRE_SAVE  => ['onCompanyPreSave', 100],
+            LeadEvents::COMPANY_POST_SAVE => ['onCompanyPostSave', -100],
         ];
     }
 
     public function onLeadPreSave(LeadEvent $event): void
     {
-        $lead = $event->getLead();
-
-        if ($this->isApiRequest()) {
-            return;
-        }
-
-        $leadId = (int) $lead->getId();
-        if ($leadId < 1) {
-            return;
-        }
-
-        $leadTable   = MAUTIC_TABLE_PREFIX.'leads';
-        $leadColumns = $this->getLeadColumns($leadTable);
-        if (empty($leadColumns) || !in_array('provider', $leadColumns, true)) {
-            return;
-        }
-
-        $persistedProvider = $this->connection->fetchOne(
-            sprintf('SELECT provider FROM `%s` WHERE id = :id', $this->escapeSqlIdentifier($leadTable)),
-            ['id' => $leadId]
+        $this->protectEntityFromUiSave(
+            'lead',
+            $event->getLead(),
+            static fn (ProviderConfig $config): array => $config->getProtectedFields()
         );
-        if (!is_string($persistedProvider) || '' === trim($persistedProvider)) {
-            return;
-        }
-
-        $provider = trim($persistedProvider);
-        $config   = $this->providerConfigRepository->findActiveByName($provider);
-        if (!$config) {
-            return;
-        }
-
-        $protectedFields = $this->normalizeProtectedFields(
-            array_merge($config->getProtectedFields(), ['provider'])
-        );
-        $protectedFields = array_values(array_intersect($protectedFields, $leadColumns));
-        if (empty($protectedFields)) {
-            return;
-        }
-
-        $persistedValues = $this->fetchPersistedLeadValues($leadTable, $leadId, $protectedFields);
-        if (empty($persistedValues)) {
-            return;
-        }
-
-        // Keep a post-save hard restore in case any later listener mutates values again.
-        $this->pendingRestores[$leadId] = $persistedValues;
-        $blockedAliases                 = [];
-
-        // Also restore in-entity before flush so ORM writes protected values back immediately.
-        foreach ($persistedValues as $fieldAlias => $originalValue) {
-            $currentValue = $lead->getFieldValue($fieldAlias);
-            if ($this->valuesDiffer($currentValue, $originalValue)) {
-                $lead->addUpdatedField($fieldAlias, $originalValue, $currentValue);
-                $blockedAliases[] = $fieldAlias;
-            }
-        }
-
-        if (!empty($blockedAliases)) {
-            sort($blockedAliases);
-            $this->pendingWarnings[$leadId] = [
-                'provider' => $provider,
-                'fields'   => $blockedAliases,
-            ];
-        }
     }
 
     public function onLeadPostSave(LeadEvent $event): void
     {
-        if ($this->isApiRequest()) {
-            return;
-        }
+        $this->restoreEntityAfterUiSave('lead', $event->getLead());
+    }
 
-        $lead   = $event->getLead();
-        $leadId = (int) $lead->getId();
+    public function onCompanyPreSave(CompanyEvent $event): void
+    {
+        $this->protectEntityFromUiSave(
+            'company',
+            $event->getCompany(),
+            static fn (ProviderConfig $config): array => $config->getProtectedCompanyFields()
+        );
+    }
 
-        if ($leadId < 1 || empty($this->pendingRestores[$leadId])) {
-            return;
-        }
-
-        $toRestore = $this->pendingRestores[$leadId];
-        unset($this->pendingRestores[$leadId]);
-
-        try {
-            $this->connection->update(
-                MAUTIC_TABLE_PREFIX.'leads',
-                $toRestore,
-                ['id' => $leadId]
-            );
-
-            if ($this->entityManager->contains($lead)) {
-                $this->entityManager->refresh($lead);
-            }
-        } catch (\Throwable $e) {
-            $this->logger->error('ExternalContacts: failed to restore protected fields for lead #{id}: {msg}', [
-                'id'  => $leadId,
-                'msg' => $e->getMessage(),
-            ]);
-        }
-
-        if (!empty($this->pendingWarnings[$leadId])) {
-            $warning = $this->pendingWarnings[$leadId];
-            unset($this->pendingWarnings[$leadId]);
-
-            $this->flashBag->add(
-                'external_contacts.notice.protected_fields_ignored',
-                [
-                    '%provider%' => $warning['provider'],
-                    '%fields%'   => implode(', ', $warning['fields']),
-                ],
-                FlashBag::LEVEL_WARNING,
-                'messages'
-            );
-        }
+    public function onCompanyPostSave(CompanyEvent $event): void
+    {
+        $this->restoreEntityAfterUiSave('company', $event->getCompany());
     }
 
     private function isApiRequest(): bool
@@ -200,28 +115,29 @@ class LeadSubscriber implements EventSubscriberInterface
     /**
      * @return string[]
      */
-    private function getLeadColumns(string $leadTable): array
+    private function getTableColumns(string $tableName): array
     {
-        if (null !== $this->leadColumns) {
-            return $this->leadColumns;
+        if (isset($this->tableColumns[$tableName])) {
+            return $this->tableColumns[$tableName];
         }
 
         try {
-            $columns = $this->connection->createSchemaManager()->listTableColumns($leadTable);
+            $columns = $this->connection->createSchemaManager()->listTableColumns($tableName);
         } catch (\Throwable $e) {
-            $this->logger->error('ExternalContacts: unable to read lead table schema: {msg}', [
+            $this->logger->error('ExternalContacts: unable to read table schema for {table}: {msg}', [
+                'table' => $tableName,
                 'msg' => $e->getMessage(),
             ]);
 
             return [];
         }
 
-        $this->leadColumns = [];
+        $this->tableColumns[$tableName] = [];
         foreach ($columns as $column) {
-            $this->leadColumns[] = $column->getName();
+            $this->tableColumns[$tableName][] = $column->getName();
         }
 
-        return $this->leadColumns;
+        return $this->tableColumns[$tableName];
     }
 
     /**
@@ -229,7 +145,7 @@ class LeadSubscriber implements EventSubscriberInterface
      *
      * @return array<string, mixed>
      */
-    private function fetchPersistedLeadValues(string $leadTable, int $leadId, array $protectedFields): array
+    private function fetchPersistedFieldValues(string $tableName, int $entityId, array $protectedFields): array
     {
         $selectColumns = [];
         foreach ($protectedFields as $fieldAlias) {
@@ -239,10 +155,10 @@ class LeadSubscriber implements EventSubscriberInterface
         $sql = sprintf(
             'SELECT %s FROM `%s` WHERE id = :id',
             implode(', ', $selectColumns),
-            $this->escapeSqlIdentifier($leadTable)
+            $this->escapeSqlIdentifier($tableName)
         );
 
-        $row = $this->connection->fetchAssociative($sql, ['id' => $leadId]);
+        $row = $this->connection->fetchAssociative($sql, ['id' => $entityId]);
         if (!is_array($row)) {
             return [];
         }
@@ -265,5 +181,150 @@ class LeadSubscriber implements EventSubscriberInterface
     private function escapeSqlIdentifier(string $identifier): string
     {
         return str_replace('`', '``', $identifier);
+    }
+
+    /**
+     * @param object $entity
+     * @param callable(ProviderConfig): array<int, mixed> $protectedFieldsResolver
+     */
+    private function protectEntityFromUiSave(string $object, object $entity, callable $protectedFieldsResolver): void
+    {
+        if ($this->isApiRequest()) {
+            return;
+        }
+
+        $entityId = (int) $entity->getId();
+        if ($entityId < 1) {
+            return;
+        }
+
+        $tableName      = MAUTIC_TABLE_PREFIX.$this->getTableNameForObject($object);
+        $providerField  = $this->getProviderFieldForObject($object);
+        $tableColumns   = $this->getTableColumns($tableName);
+        $restoreKey     = $this->getEntityKey($object, $entityId);
+        if (empty($tableColumns) || !in_array($providerField, $tableColumns, true)) {
+            return;
+        }
+
+        $persistedProvider = $this->connection->fetchOne(
+            sprintf(
+                'SELECT `%s` FROM `%s` WHERE id = :id',
+                $this->escapeSqlIdentifier($providerField),
+                $this->escapeSqlIdentifier($tableName)
+            ),
+            ['id' => $entityId]
+        );
+        if (!is_string($persistedProvider) || '' === trim($persistedProvider)) {
+            return;
+        }
+
+        $provider = trim($persistedProvider);
+        $config   = $this->providerConfigRepository->findActiveByName($provider);
+        if (!$config) {
+            return;
+        }
+
+        $protectedFields = $this->normalizeProtectedFields(
+            array_merge($protectedFieldsResolver($config), [$providerField])
+        );
+        $protectedFields = array_values(array_intersect($protectedFields, $tableColumns));
+        if (empty($protectedFields)) {
+            return;
+        }
+
+        $persistedValues = $this->fetchPersistedFieldValues($tableName, $entityId, $protectedFields);
+        if (empty($persistedValues)) {
+            return;
+        }
+
+        $this->pendingRestores[$restoreKey] = $persistedValues;
+        $blockedAliases                     = [];
+
+        foreach ($persistedValues as $fieldAlias => $originalValue) {
+            $currentValue = $entity->getFieldValue($fieldAlias);
+            if ($this->valuesDiffer($currentValue, $originalValue)) {
+                $entity->addUpdatedField($fieldAlias, $originalValue, $currentValue);
+                $blockedAliases[] = $fieldAlias;
+            }
+        }
+
+        if (!empty($blockedAliases)) {
+            sort($blockedAliases);
+            $this->pendingWarnings[$restoreKey] = [
+                'provider' => $provider,
+                'fields'   => $blockedAliases,
+            ];
+        }
+    }
+
+    private function restoreEntityAfterUiSave(string $object, object $entity): void
+    {
+        if ($this->isApiRequest()) {
+            return;
+        }
+
+        $entityId = (int) $entity->getId();
+        if ($entityId < 1) {
+            return;
+        }
+
+        $restoreKey = $this->getEntityKey($object, $entityId);
+        if (empty($this->pendingRestores[$restoreKey])) {
+            return;
+        }
+
+        $tableName  = MAUTIC_TABLE_PREFIX.$this->getTableNameForObject($object);
+        $toRestore  = $this->pendingRestores[$restoreKey];
+        unset($this->pendingRestores[$restoreKey]);
+
+        try {
+            $this->connection->update($tableName, $toRestore, ['id' => $entityId]);
+
+            if ($this->entityManager->contains($entity)) {
+                $this->entityManager->refresh($entity);
+            }
+        } catch (\Throwable $e) {
+            $this->logger->error('ExternalContacts: failed to restore protected fields for {object} #{id}: {msg}', [
+                'object' => $object,
+                'id'     => $entityId,
+                'msg'    => $e->getMessage(),
+            ]);
+        }
+
+        if (!empty($this->pendingWarnings[$restoreKey])) {
+            $warning = $this->pendingWarnings[$restoreKey];
+            unset($this->pendingWarnings[$restoreKey]);
+
+            $this->flashBag->add(
+                'external_contacts.notice.protected_fields_ignored',
+                [
+                    '%provider%' => $warning['provider'],
+                    '%fields%'   => implode(', ', $warning['fields']),
+                ],
+                FlashBag::LEVEL_WARNING,
+                'messages'
+            );
+        }
+    }
+
+    private function getEntityKey(string $object, int $entityId): string
+    {
+        return $object.':'.$entityId;
+    }
+
+    private function getProviderFieldForObject(string $object): string
+    {
+        return match ($object) {
+            'company' => 'companyprovider',
+            default   => 'provider',
+        };
+    }
+
+    private function getTableNameForObject(string $object): string
+    {
+        return match ($object) {
+            'company' => 'companies',
+            default   => 'leads',
+        };
     }
 }

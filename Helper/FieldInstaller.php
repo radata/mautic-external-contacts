@@ -18,6 +18,15 @@ class FieldInstaller
             'visible'    => true,
             'properties' => [],
         ],
+        [
+            'alias'      => 'companyprovider',
+            'label'      => 'Company Provider',
+            'type'       => 'text',
+            'group'      => 'core',
+            'object'     => 'company',
+            'visible'    => true,
+            'properties' => [],
+        ],
     ];
 
     public function __construct(

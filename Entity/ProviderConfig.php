@@ -15,6 +15,8 @@ class ProviderConfig extends CommonEntity
 
     private array $protectedFields = [];
 
+    private array $protectedCompanyFields = [];
+
     private bool $isActive = true;
 
     private ?\DateTimeInterface $dateAdded = null;
@@ -37,6 +39,10 @@ class ProviderConfig extends CommonEntity
 
         $builder->createField('protectedFields', Types::JSON)
             ->columnName('protected_fields')
+            ->build();
+
+        $builder->createField('protectedCompanyFields', Types::JSON)
+            ->columnName('protected_company_fields')
             ->build();
 
         $builder->createField('isActive', Types::BOOLEAN)
@@ -70,12 +76,24 @@ class ProviderConfig extends CommonEntity
 
     public function getProtectedFields(): array
     {
-        return $this->protectedFields;
+        return $this->normalizeFieldAliases($this->protectedFields);
     }
 
     public function setProtectedFields(array $protectedFields): self
     {
-        $this->protectedFields = $protectedFields;
+        $this->protectedFields = $this->normalizeFieldAliases($protectedFields);
+
+        return $this;
+    }
+
+    public function getProtectedCompanyFields(): array
+    {
+        return $this->normalizeFieldAliases($this->protectedCompanyFields);
+    }
+
+    public function setProtectedCompanyFields(array $protectedCompanyFields): self
+    {
+        $this->protectedCompanyFields = $this->normalizeFieldAliases($protectedCompanyFields);
 
         return $this;
     }
@@ -119,5 +137,30 @@ class ProviderConfig extends CommonEntity
     public function getName(): string
     {
         return $this->providerName;
+    }
+
+    /**
+     * @param array<int, mixed> $fieldAliases
+     *
+     * @return string[]
+     */
+    private function normalizeFieldAliases(array $fieldAliases): array
+    {
+        $normalized = [];
+
+        foreach ($fieldAliases as $fieldAlias) {
+            if (!is_string($fieldAlias)) {
+                continue;
+            }
+
+            $fieldAlias = trim($fieldAlias);
+            if ('' === $fieldAlias) {
+                continue;
+            }
+
+            $normalized[] = $fieldAlias;
+        }
+
+        return array_values(array_unique($normalized));
     }
 }

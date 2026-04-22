@@ -1,15 +1,15 @@
 # Mautic External Contacts Plugin
 
-Mautic 7.x plugin that protects contact fields managed by external applications from being edited in the Mautic UI. When a contact is owned by an external provider, configured fields become read-only in the UI while remaining writable via the API and direct SQL.
+Mautic 7.x plugin that protects contact and company fields managed by external applications from being edited in the Mautic UI. When a contact or company is owned by an external provider, configured fields become read-only in the UI while remaining writable via the API and direct SQL.
 
 ## Features
 
-- **Provider field**: Adds a `provider` text field to contacts — set by external apps to claim ownership
-- **Field protection**: Configured fields become read-only in the Mautic UI when a provider is set
-- **Per-provider config**: Each provider can protect a different set of fields
-- **API pass-through**: Mautic REST API requests bypass protection — external apps can always update their contacts
+- **Provider fields**: Adds a `provider` field for contacts and a `companyprovider` field for companies
+- **Field protection**: Configured contact and company fields become read-only in the Mautic UI when a provider is set
+- **Per-provider config**: Each provider can protect different field sets for leads and companies
+- **API pass-through**: Mautic REST API requests bypass protection — external apps can always update their contacts and companies
 - **Visual indicators**: Protected fields show a "Protected" badge and are greyed out in the edit form
-- **Admin UI**: Manage providers and their protected fields from Settings > External Contacts
+- **Admin UI**: Manage providers and configure lead/company managed fields from Settings > External Contacts
 
 ## Requirements
 
@@ -61,7 +61,7 @@ docker exec --user www-data --workdir /var/www/html mautic_web php bin/console m
 
 1. Go to **Settings > Plugins > External Contacts**
 2. Set **Published** to **Yes**
-3. The `provider` custom field is created automatically on install
+3. The `provider` and `companyprovider` custom fields are created automatically on install
 
 ### Update
 
@@ -83,48 +83,55 @@ Go to **Settings > External Contacts** (admin menu) to configure providers:
 
 | Field | Description |
 |---|---|
-| **Provider Name** | Must match the value stored in the contact's `provider` field (e.g. `APP`, `hollandworx`) |
-| **Protected Fields** | Multi-select of contact field aliases that should be read-only in the UI |
+| **Provider Name** | Must match the value stored in the contact `provider` field and/or company `companyprovider` field (for example `APP`, `hollandworx`) |
+| **Lead Fields tab** | Multi-select of contact field aliases that should be read-only in the UI |
+| **Company Fields tab** | Multi-select of company field aliases that should be read-only in the UI |
 | **Active** | Enable/disable protection for this provider |
 
-### 2. Set Provider on Contacts
+### 2. Set Provider on Contacts and Companies
 
 Set the `provider` field on contacts via your external app. This can be done via:
 
 - **Mautic REST API**: `PATCH /api/contacts/{id}/edit` with `{"provider": "APP"}`
 - **Direct SQL**: `UPDATE leads SET provider = 'APP' WHERE worker_id IS NOT NULL`
 
-Once a contact has a `provider` value matching a configured provider, the protected fields become read-only in the Mautic UI.
+Set the `companyprovider` field on companies the same way:
+
+- **Mautic REST API**: `PATCH /api/companies/{id}/edit` with `{"companyprovider": "APP"}`
+- **Direct SQL**: `UPDATE companies SET companyprovider = 'APP' WHERE id = ?`
+
+Once a contact or company has a matching provider value, the configured fields for that object become read-only in the Mautic UI.
 
 ## How It Works
 
 ### Backend Protection (LeadSubscriber)
 
-Listens to `LEAD_PRE_SAVE` with high priority. When a contact is saved from the UI:
+Listens to `LEAD_PRE_SAVE` and `COMPANY_PRE_SAVE` with high priority. When a contact or company is saved from the UI:
 
-1. Checks if the contact has a `provider` value
+1. Checks if the record has a provider value (`provider` for contacts, `companyprovider` for companies)
 2. Looks up the provider configuration
 3. Detects UI requests (non-API routes don't have `mautic_api_` prefix)
 4. Reverts any changes to protected fields back to their original values
-5. The `provider` field itself is always protected from UI changes
+5. The provider field itself is always protected from UI changes
 
-API requests (`mautic_api_*` routes) bypass all protection — external apps can always update their contacts.
+API requests (`mautic_api_*` routes) bypass all protection — external apps can always update their contacts and companies.
 
 ### Visual Protection (JavaScript)
 
-On the contact edit form, when a provider is detected:
+On the contact or company edit form, when a provider is detected:
 
-- A **"Managed by: {provider}"** badge appears next to the contact name
+- A **"Managed by: {provider}"** indicator appears on the form
 - Protected fields are visually disabled (greyed out, cursor: not-allowed)
 - Each protected field gets a **"Protected"** label badge
 
 ## Custom Fields
 
-The plugin creates one custom contact field on install:
+The plugin creates two custom fields on install:
 
 | Field | Alias | Type | Description |
 |---|---|---|---|
 | **Provider** | `provider` | Text | Name of the external app that owns this contact |
+| **Company Provider** | `companyprovider` | Text | Name of the external app that owns this company |
 
 ## Example: n8n Integration
 
@@ -159,13 +166,14 @@ plugins/ExternalContactsBundle/
 │   ├── ProviderConfig.php                     # Doctrine entity (external_contact_providers table)
 │   └── ProviderConfigRepository.php           # Repository wrapper with findActiveByName()
 ├── Migrations/
-│   └── M001_CreateProviderConfigTable.php     # Creates external_contact_providers table
+│   ├── M001_CreateProviderConfigTable.php     # Creates external_contact_providers table
+│   └── M002_AddProtectedCompanyFields.php     # Adds company field protection config storage
 ├── EventListener/
-│   ├── PluginSubscriber.php                   # Creates provider field on install/update
-│   ├── LeadSubscriber.php                     # LEAD_PRE_SAVE: reverts protected fields on UI save
+│   ├── PluginSubscriber.php                   # Creates provider fields on install/update
+│   ├── LeadSubscriber.php                     # Lead/company UI-save protection and restore logic
 │   └── InjectCustomContentSubscriber.php      # Injects JS to disable fields + badge
 ├── Helper/
-│   └── FieldInstaller.php                     # Creates the provider custom field
+│   └── FieldInstaller.php                     # Creates provider custom fields
 ├── Resources/views/Provider/
 │   ├── index.html.twig                        # Provider list page
 │   └── form.html.twig                         # Add/edit provider form
@@ -196,7 +204,7 @@ docker exec mautic_web grep -i ExternalContacts /var/www/html/var/logs/mautic_pr
 
 ### Protected fields still editable
 
-1. **Verify provider value**: Check the contact's `provider` field matches the configured provider name exactly (case-sensitive)
+1. **Verify provider value**: Check the contact `provider` or company `companyprovider` field matches the configured provider name exactly (case-sensitive)
 2. **Check provider is active**: Go to Settings > External Contacts and verify the provider is marked Active
 3. **Clear cache** after plugin changes:
    ```bash
@@ -208,7 +216,7 @@ docker exec mautic_web grep -i ExternalContacts /var/www/html/var/logs/mautic_pr
 
 1. Run `mautic:plugins:reload` to trigger field creation
 2. Check Mautic logs for field creation errors
-3. Verify the field exists: **Settings > Custom Fields** — look for `provider`
+3. Verify the fields exist: **Settings > Custom Fields** — look for `provider` and `companyprovider`
 
 ## License
 

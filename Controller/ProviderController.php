@@ -12,6 +12,11 @@ use Symfony\Component\HttpFoundation\Response;
 
 class ProviderController extends FormController
 {
+    private const AUTO_PROTECTED_FIELDS = [
+        'lead'    => ['provider'],
+        'company' => ['companyprovider'],
+    ];
+
     public function indexAction(
         EntityManagerInterface $em,
     ): Response {
@@ -42,66 +47,70 @@ class ProviderController extends FormController
         $repo   = $em->getRepository(ProviderConfig::class);
         $isNew  = (0 === $objectId);
         $entity = $isNew ? new ProviderConfig() : $repo->find($objectId);
+        $formRoute = $isNew
+            ? $this->generateUrl('mautic_external_contacts_provider_new')
+            : $this->generateUrl('mautic_external_contacts_provider_edit', ['objectId' => $objectId]);
 
         if (!$entity) {
             return $this->notFound();
         }
 
-        // Get all lead field aliases for the multi-select (flat list: alias => label)
-        $leadFields = $fieldModel->getFieldList(false, true, ['isPublished' => true, 'object' => 'lead']);
-        $fieldChoices = [];
-        foreach ($leadFields as $alias => $label) {
-            $fieldChoices[$alias] = $label . ' (' . $alias . ')';
-        }
+        $leadFieldChoices    = $this->buildFieldChoices($fieldModel, 'lead');
+        $companyFieldChoices = $this->buildFieldChoices($fieldModel, 'company');
 
         if ('POST' === $request->getMethod()) {
             $data = $request->request->all();
+            $existingProviderName = $entity->getProviderName();
 
-            $providerName    = trim($data['provider_name'] ?? '');
-            $protectedFields = $data['protected_fields'] ?? [];
-            $isActive        = (bool) ($data['is_active'] ?? true);
+            $providerName           = trim($data['provider_name'] ?? '');
+            $protectedFields        = $this->normalizePostedFieldAliases($data['protected_fields'] ?? []);
+            $protectedCompanyFields = $this->normalizePostedFieldAliases($data['protected_company_fields'] ?? []);
+            $isActive               = (bool) ($data['is_active'] ?? true);
+
+            $entity->setProviderName($providerName);
+            $entity->setProtectedFields($protectedFields);
+            $entity->setProtectedCompanyFields($protectedCompanyFields);
+            $entity->setIsActive($isActive);
 
             if (empty($providerName)) {
                 $this->addFlashMessage('Provider name is required.', [], 'error');
 
                 return $this->delegateView([
                     'viewParameters' => [
-                        'entity'       => $entity,
-                        'fieldChoices' => $fieldChoices,
-                        'isNew'        => $isNew,
+                        'entity'              => $entity,
+                        'leadFieldChoices'    => $leadFieldChoices,
+                        'companyFieldChoices' => $companyFieldChoices,
+                        'isNew'               => $isNew,
                     ],
                     'contentTemplate' => '@ExternalContacts/Provider/form.html.twig',
                     'passthroughVars' => [
                         'mauticContent' => 'externalContactsProvider',
-                        'route'         => $this->generateUrl('mautic_external_contacts_provider_edit', ['objectId' => $objectId]),
+                        'route'         => $formRoute,
                     ],
                 ]);
             }
 
             // Check for duplicate provider name
-            if ($isNew || $entity->getProviderName() !== $providerName) {
+            if ($isNew || $existingProviderName !== $providerName) {
                 $existing = $repo->findOneBy(['providerName' => $providerName]);
                 if ($existing && $existing->getId() !== $entity->getId()) {
                     $this->addFlashMessage('A provider with this name already exists.', [], 'error');
 
                     return $this->delegateView([
                         'viewParameters' => [
-                            'entity'       => $entity,
-                            'fieldChoices' => $fieldChoices,
-                            'isNew'        => $isNew,
+                            'entity'              => $entity,
+                            'leadFieldChoices'    => $leadFieldChoices,
+                            'companyFieldChoices' => $companyFieldChoices,
+                            'isNew'               => $isNew,
                         ],
                         'contentTemplate' => '@ExternalContacts/Provider/form.html.twig',
                         'passthroughVars' => [
                             'mauticContent' => 'externalContactsProvider',
-                            'route'         => $this->generateUrl('mautic_external_contacts_provider_edit', ['objectId' => $objectId]),
+                            'route'         => $formRoute,
                         ],
                     ]);
                 }
             }
-
-            $entity->setProviderName($providerName);
-            $entity->setProtectedFields(array_values($protectedFields));
-            $entity->setIsActive($isActive);
 
             if ($isNew) {
                 $entity->setDateAdded(new \DateTime());
@@ -120,14 +129,15 @@ class ProviderController extends FormController
 
         return $this->delegateView([
             'viewParameters' => [
-                'entity'       => $entity,
-                'fieldChoices' => $fieldChoices,
-                'isNew'        => $isNew,
+                'entity'              => $entity,
+                'leadFieldChoices'    => $leadFieldChoices,
+                'companyFieldChoices' => $companyFieldChoices,
+                'isNew'               => $isNew,
             ],
             'contentTemplate' => '@ExternalContacts/Provider/form.html.twig',
             'passthroughVars' => [
                 'mauticContent' => 'externalContactsProvider',
-                'route'         => $this->generateUrl('mautic_external_contacts_provider_edit', ['objectId' => $objectId]),
+                'route'         => $formRoute,
             ],
         ]);
     }
@@ -151,5 +161,51 @@ class ProviderController extends FormController
         }
 
         return $this->redirectToRoute('mautic_external_contacts_providers');
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function buildFieldChoices(FieldModel $fieldModel, string $object): array
+    {
+        $fieldChoices = [];
+        $fields       = $fieldModel->getFieldList(false, true, ['isPublished' => true, 'object' => $object]);
+        $excluded     = self::AUTO_PROTECTED_FIELDS[$object] ?? [];
+
+        foreach ($fields as $alias => $label) {
+            if (in_array($alias, $excluded, true)) {
+                continue;
+            }
+
+            $fieldChoices[$alias] = $label.' ('.$alias.')';
+        }
+
+        return $fieldChoices;
+    }
+
+    /**
+     * @return string[]
+     */
+    private function normalizePostedFieldAliases(mixed $fieldAliases): array
+    {
+        if (!is_array($fieldAliases)) {
+            return [];
+        }
+
+        $normalized = [];
+        foreach ($fieldAliases as $fieldAlias) {
+            if (!is_string($fieldAlias)) {
+                continue;
+            }
+
+            $fieldAlias = trim($fieldAlias);
+            if ('' === $fieldAlias) {
+                continue;
+            }
+
+            $normalized[] = $fieldAlias;
+        }
+
+        return array_values(array_unique($normalized));
     }
 }
