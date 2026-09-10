@@ -17,6 +17,8 @@ class ExternalContactsExtension extends Extension
     public function load(array $configs, ContainerBuilder $container): void
     {
         $loader = new PhpFileLoader($container, new FileLocator(__DIR__.'/../Config'));
-        $loader->load('services.php');
+        // Not named services.php on purpose: app/config/services.php only auto-registers a
+        // plugin's classes (controllers, subscribers, ...) when that file is absent.
+        $loader->load('legacy_aliases.php');
     }
 }
